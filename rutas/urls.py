@@ -4,8 +4,7 @@ from .views import (
     RutaViewSet,
     PuntoViewSet,
     LineaRutaViewSet,
-    ruta_optima_coords,
-    ruta_optima_ids,
+    ruta_optima,
     ruta_por_linea,
     rutas_todas
 )
@@ -17,13 +16,9 @@ router.register(r'lineas', LineaRutaViewSet)
 
 urlpatterns = [
 
-    # 🔵 RUTAS PERSONALIZADAS (PRIMERO)
-    path("ruta-optima/", ruta_optima_coords, name="ruta_optima_coords"),
-    path("rutas/optima/", ruta_optima_ids, name="ruta_optima_ids"),
-    path("rutas/optima-coords/", ruta_optima_coords, name="ruta_optima_coords"),
+    path("rutas/optima-coords/", ruta_optima, name="ruta_optima_coords"),
     path("rutas/todas/", rutas_todas, name="todas_las_rutas"),
     path("rutas/linea/<str:linea>/", ruta_por_linea, name="ruta_por_linea"),
-
-    # 🔵 Router DRF (AL FINAL SIEMPRE)
+    
     path("", include(router.urls)),
 ]

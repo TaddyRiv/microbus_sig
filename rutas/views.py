@@ -10,6 +10,14 @@ from django.contrib.gis.db.models.functions import Distance
 from .models import Punto, Ruta, LineaRuta, Edge
 from .serializers import PuntoSerializer, RutaSerializer, LineaRutaSerializer
 
+from heapq import heappush, heappop
+import json
+from math import radians, cos, sin, sqrt, atan2
+from collections import defaultdict
+
+import itertools
+counter = itertools.count()
+
 class PuntoViewSet(viewsets.ModelViewSet):
     queryset = Punto.objects.all()
     serializer_class = PuntoSerializer
@@ -23,6 +31,7 @@ class RutaViewSet(viewsets.ModelViewSet):
 class LineaRutaViewSet(viewsets.ModelViewSet):
     queryset = LineaRuta.objects.all()
     serializer_class = LineaRutaSerializer
+
 
 @api_view(["GET"])
 def ruta_por_linea(request, linea):
@@ -67,80 +76,178 @@ def rutas_todas(request):
     return Response(data)
 
 
-@api_view(["GET"])
-def ruta_optima_coords(request):
-    """Encuentra ruta óptima desde coordenadas (lat,lon)"""
+TRANSFER_RADIUS_METERS = 25  # radio máximo para considerar un transbordo
+TRANSFER_COST = 0.0          # costo de "caminar" entre paradas cercanas
 
+
+def haversine_m(lat1, lon1, lat2, lon2):
+    R = 6371000  # radio de la Tierra en metros
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * c
+
+def punto_mas_cercano(lat, lon):
+    p = Point(lon, lat, srid=4326)
+    return Punto.objects.annotate(
+        distancia=Distance("ubicacion", p)
+    ).order_by("distancia").first()
+
+
+def construir_grafo_con_transbordos():
+
+    graph = defaultdict(list)
+
+    #Edges de la BD (movimiento en microbus)
+    for e in Edge.objects.all():
+        # Edge dirigido
+        graph[e.source_id].append((e.target_id, e.cost, e.ruta_id, "bus"))
+        # Si quieres que sea bidireccional, descomenta:
+        # graph[e.target_id].append((e.source_id, e.cost, e.ruta_id, "bus"))
+
+    #Edges de transbordo entre puntos cercanos (a pie)
+    puntos = list(Punto.objects.all())
+    coords = {p.id: (p.ubicacion.y, p.ubicacion.x) for p in puntos}  # id -> (lat, lon)
+    ids = [p.id for p in puntos]
+
+    for i in range(len(ids)):
+        id_a = ids[i]
+        lat_a, lon_a = coords[id_a]
+        for j in range(i+1, len(ids)):
+            id_b = ids[j]
+            lat_b, lon_b = coords[id_b]
+            d = haversine_m(lat_a, lon_a, lat_b, lon_b)
+            if d <= TRANSFER_RADIUS_METERS:
+                # Edge de "caminar" entre paradas (bidireccional)
+                graph[id_a].append((id_b, TRANSFER_COST, None, "transfer"))
+                graph[id_b].append((id_a, TRANSFER_COST, None, "transfer"))
+
+    return graph
+
+def dijkstra_con_transbordos(graph, origen_id, destino_id):
+    """
+    Devuelve: (costo_total, pasos)
+    pasos = lista de dicts: {source, target, ruta_id, modo}
+    """
+
+    heap = []
+    heappush(heap, (0.0, next(counter), origen_id, []))  # (costo, orden, nodo, pasos)
+    mejor_costo = {}
+
+    while heap:
+        costo, _, nodo, pasos = heappop(heap)
+
+        if nodo in mejor_costo and mejor_costo[nodo] <= costo:
+            continue
+        mejor_costo[nodo] = costo
+
+        if nodo == destino_id:
+            return costo, pasos
+
+        for vecino, edge_cost, ruta_id, modo in graph.get(nodo, []):
+            nuevo_costo = costo + edge_cost
+
+            nuevo_pasos = pasos + [{
+                "source": nodo,
+                "target": vecino,
+                "ruta_id": ruta_id,
+                "modo": modo,
+            }]
+
+            heappush(
+                heap,
+                (nuevo_costo, next(counter), vecino, nuevo_pasos)
+            )
+
+    return None, []
+
+
+@api_view(["GET"])
+def ruta_optima(request):
     try:
         lat_origen = float(request.GET.get("lat_origen"))
         lon_origen = float(request.GET.get("lon_origen"))
         lat_destino = float(request.GET.get("lat_destino"))
         lon_destino = float(request.GET.get("lon_destino"))
-    except:
-        return Response({"error": "Parámetros inválidos"}, status=400)
+    except (TypeError, ValueError):
+        return Response({"error": "Parámetros lat/lon inválidos"}, status=400)
 
-    origen_geom = Point(lon_origen, lat_origen, srid=4326)
-    destino_geom = Point(lon_destino, lat_destino, srid=4326)
+    # Buscar puntos cercanos
+    p_origen = punto_mas_cercano(lat_origen, lon_origen)
+    p_destino = punto_mas_cercano(lat_destino, lon_destino)
 
-    origen = Punto.objects.annotate(dist=Distance("ubicacion", origen_geom)).order_by("dist").first()
-    destino = Punto.objects.annotate(dist=Distance("ubicacion", destino_geom)).order_by("dist").first()
-
-    if not origen or not destino:
+    if not p_origen or not p_destino:
         return Response({"error": "No se encontraron puntos cercanos"}, status=404)
 
-    return ejecutar_dijkstra(origen.id, destino.id)
+    # Grafo completo
+    graph = construir_grafo_con_transbordos()
 
-@api_view(["GET"])
-def ruta_optima_ids(request):
-    """Encuentra ruta óptima desde IDs de puntos"""
+    # Ejecutar Dijkstra con transbordos
+    costo_total, pasos = dijkstra_con_transbordos(graph, p_origen.id, p_destino.id)
 
-    try:
-        origen = int(request.GET.get("origen"))
-        destino = int(request.GET.get("destino"))
-    except:
-        return JsonResponse({"error": "Debe enviar origen y destino"}, status=400)
+    if costo_total is None:
+        return Response({"error": "No existe ruta entre origen y destino"}, status=404)
 
-    return ejecutar_dijkstra(origen, destino)
 
-def ejecutar_dijkstra(origen, destino):
-    sql = f"""
-        SELECT * FROM pgr_dijkstra(
-            'SELECT id, source_id AS source, target_id AS target, cost FROM rutas_edge',
-            {origen},
-            {destino},
-            directed := true
-        );
-    """
+    resultado = []
 
-    with connection.cursor() as cursor:
-        cursor.execute(sql)
-        steps = cursor.fetchall()
+    for paso in pasos:
+        source_id = paso["source"]
+        target_id = paso["target"]
+        modo = paso["modo"]         # bus / transfer
+        ruta_id = paso["ruta_id"] 
 
-    if not steps:
-        return JsonResponse({"error": "No existe una ruta entre los puntos"}, status=404)
+        # ---------- BUS ----------
+        if modo == "bus":
+            e = Edge.objects.filter(source_id=source_id, target_id=target_id).first()
+            if not e:
+                continue
 
-    # Lista de edges utilizados
-    edge_ids = [row[3] for row in steps if row[3] != -1]
+            linea = e.ruta.linea if hasattr(e, "ruta") else f"L{ruta_id:03d}"
 
-    features = []
-    for edge_id in edge_ids:
-        try:
-            e = Edge.objects.get(id=edge_id)
-        except Edge.DoesNotExist:
-            continue
+            # Color asignado segun línea
+            color = obtener_color_hex(linea)
 
-        features.append({
-            "type": "Feature",
-            "geometry": e.geom.geojson,
-            "properties": {
-                "edge": e.id,
-                "ruta": e.ruta.linea if e.ruta else None
-            }
-        })
+            resultado.append({
+                "tipo": "bus",
+                "linea": linea,
+                "ruta_id": ruta_id,
+                "color": color,
+                "geometry": json.loads(e.geom.geojson)["coordinates"]
+            })
 
-    return JsonResponse({
-        "origen": origen,
-        "destino": destino,
-        "edges": edge_ids,
-        "geojson": features
+        # ---------- TRANSFER ----------
+        else:
+            p1 = Punto.objects.get(id=source_id)
+            p2 = Punto.objects.get(id=target_id)
+
+            resultado.append({
+                "tipo": "transfer",
+                "descripcion": "Transferencia entre líneas",
+                "geometry": [
+                    [p1.ubicacion.x, p1.ubicacion.y],
+                    [p2.ubicacion.x, p2.ubicacion.y],
+                ]
+            })
+
+    return Response({
+        "costo_total": costo_total,
+        "ruta_optima": resultado
     })
+
+
+def obtener_color_hex(linea):
+    colores = {
+        "L001": "#FF0000",
+        "L002": "#0066FF",
+        "L005": "#00AA00",
+        "L008": "#FF9900",
+        "L009": "#9933FF",
+        "L010": "#FF5555",
+        "L011": "#008B8B",
+        "L016": "#000000",
+        "L017": "#FF6600",
+        "L018": "#0099FF",
+    }
+    return colores.get(linea, "#777777")  # gris por defecto

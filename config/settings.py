@@ -15,7 +15,8 @@ ALLOWED_HOSTS = [
     "10.0.2.2",
     "127.0.0.1",
     "localhost",
-    "*"
+    "*",
+    "192.168.100.5",
 ]
 
 INSTALLED_APPS = [
@@ -29,7 +30,7 @@ INSTALLED_APPS = [
     "django_extensions",
     'rest_framework',
     'rest_framework_gis',
-    'rutas',   # <-- tu app
+    'rutas',  
 ]
 
 MIDDLEWARE = [
@@ -62,7 +63,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 
 
-# 🔥 --- BASE DE DATOS SUPABASE + POSTGIS (CORRECTO) ---
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 DATABASES = {
@@ -72,7 +73,6 @@ DATABASES = {
         conn_max_age=600,
     )
 }
-# 🔥 ---------------------------------------------------
 
 AUTH_PASSWORD_VALIDATORS = [
     {
