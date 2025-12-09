@@ -7,16 +7,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = 'django-insecure-rj^+f*eg#9ht^x0x0hkexe)g5zix^#w=v%7m+)-9nedvmp-g(('
 
-GDAL_LIBRARY_PATH = r"C:\Program Files\GDAL\gdal.dll"
+GDAL_LIBRARY_PATH = "/usr/lib/x86_64-linux-gnu/libgdal.so"
 
-DEBUG = True
+
+
+DEBUG = False
 
 ALLOWED_HOSTS = [
-    "10.0.2.2",
-    "127.0.0.1",
+    "18.188.166.51",
     "localhost",
-    "*",
-    "192.168.100.5",
+    "127.0.0.1",
 ]
 
 INSTALLED_APPS = [
@@ -95,6 +95,6 @@ USE_I18N = True
 USE_TZ = True
 
 
-STATIC_URL = 'static/'
+STATIC_URL = 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
